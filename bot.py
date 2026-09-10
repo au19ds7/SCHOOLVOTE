@@ -17,7 +17,7 @@ active_vote = {
     "in_progress": False,
     "topic": "",
     "duration": 25,
-    "votes": {"yes": [], "no": []},
+    "votes": {"yes": [], "no": [], "abstain": []},
     "voted_users": set(),
     "messages_to_update": {}
 }
@@ -31,9 +31,16 @@ def is_admin(username: str) -> bool:
 
 def get_main_keyboard(is_adm: bool):
     kb = [
-        [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
-         InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")],
-        [InlineKeyboardButton(text="👤 Мій профіль", callback_data="profile")]
+        [
+            InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
+            InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")
+        ],
+        [
+            InlineKeyboardButton(text="➖ Утриматися", callback_data="vote_abstain")
+        ],
+        [
+            InlineKeyboardButton(text="👤 Мій профіль", callback_data="profile")
+        ]
     ]
     if is_adm:
         kb.append([InlineKeyboardButton(text="📢 Надіслати голосування", callback_data="start_vote")])
@@ -54,7 +61,6 @@ async def profile_handler(callback: types.CallbackQuery):
     await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
 
-# Підтримка команд /give admin @username та /give_admin @username
 @dp.message(Command("give"))
 async def give_command_handler(message: types.Message):
     if not is_admin(message.from_user.username):
@@ -62,7 +68,6 @@ async def give_command_handler(message: types.Message):
         return
     
     args = message.text.split()
-    # Якщо команда написана як /give admin @username
     if len(args) >= 3 and args[1].lower() == "admin":
         target = args[2].replace("@", "").strip().lower()
         admins_usernames.add(target)
@@ -125,15 +130,20 @@ async def handle_text(message: types.Message):
             active_vote["in_progress"] = True
             active_vote["topic"] = topic
             active_vote["duration"] = duration
-            active_vote["votes"] = {"yes": [], "no": []}
+            active_vote["votes"] = {"yes": [], "no": [], "abstain": []}
             active_vote["voted_users"] = set()
             active_vote["messages_to_update"] = {}
             
             await message.answer(f"🚀 Голосування запущено на {duration} сек! Розсилаю {len(users)} користувачам...")
             
             vote_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
-                 InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")]
+                [
+                    InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
+                    InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")
+                ],
+                [
+                    InlineKeyboardButton(text="➖ Утриматися", callback_data="vote_abstain")
+                ]
             ])
             
             for uid in users:
@@ -155,8 +165,13 @@ async def handle_text(message: types.Message):
 async def run_vote_timer(admin_id: int):
     seconds_left = active_vote["duration"]
     vote_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
-         InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")]
+        [
+            InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
+            InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")
+        ],
+        [
+            InlineKeyboardButton(text="➖ Утриматися", callback_data="vote_abstain")
+        ]
     ])
     
     while seconds_left > 0 and active_vote["in_progress"]:
@@ -180,38 +195,56 @@ async def run_vote_timer(admin_id: int):
 
     active_vote["in_progress"] = False
     
+    # Підрахунок кількості голосів для загального звіту
+    yes_count = len(active_vote["votes"]["yes"])
+    no_count = len(active_vote["votes"]["no"])
+    abstain_count = len(active_vote["votes"]["abstain"])
+
+    # Учасникам відправляємо загальну статистику без імен
+    public_results = (
+        f"📢 **ГОЛОСУВАННЯ ЗАВЕРШЕНО!**\n\n"
+        f"📌 Тема: *{active_vote['topic']}*\n\n"
+        f"📊 **Підсумки:**\n"
+        f"👍 За: **{yes_count}**\n"
+        f"👎 Проти: **{no_count}**\n"
+        f"➖ Утрималися: **{abstain_count}**"
+    )
+
     for uid, msg_id in list(active_vote["messages_to_update"].items()):
         try:
             await bot.edit_message_text(
                 chat_id=uid,
                 message_id=msg_id,
-                text=f"📢 **ГОЛОСУВАННЯ ЗАВЕРШЕНО!**\n\n{active_vote['topic']}",
+                text=public_results,
                 reply_markup=None,
                 parse_mode="Markdown"
             )
         except Exception:
             pass
 
+    # Адміну відправляємо детальний звіт із іменами
     yes_list = active_vote["votes"]["yes"]
     no_list = active_vote["votes"]["no"]
+    abstain_list = active_vote["votes"]["abstain"]
     
     def format_users(lst):
         if not lst: return "Нікого"
         return "\n".join([f"• {u['name']} (@{u['username']})" for u in lst])
     
-    res_text = (
-        f"📊 **РЕЗУЛЬТАТИ ГОЛОСУВАННЯ**\n"
+    admin_res_text = (
+        f"📊 **ПОВНИЙ ЗВІТ ДЛЯ АДМІНІСТРАТОРА**\n"
         f"📌 Тема: *{active_vote['topic']}*\n\n"
-        f"👍 За: **{len(yes_list)}**\n{format_users(yes_list)}\n\n"
-        f"👎 Проти: **{len(no_list)}**\n{format_users(no_list)}"
+        f"👍 За: **{yes_count}**\n{format_users(yes_list)}\n\n"
+        f"👎 Проти: **{no_count}**\n{format_users(no_list)}\n\n"
+        f"➖ Утрималися: **{abstain_count}**\n{format_users(abstain_list)}"
     )
     
     try:
-        await bot.send_message(admin_id, res_text, parse_mode="Markdown")
+        await bot.send_message(admin_id, admin_res_text, parse_mode="Markdown")
     except:
         pass
 
-@dp.callback_query(F.data.in_({"vote_yes", "vote_no"}))
+@dp.callback_query(F.data.in_({"vote_yes", "vote_no", "vote_abstain"}))
 async def handle_vote(callback: types.CallbackQuery):
     if not active_vote["in_progress"]:
         await callback.answer("❌ Голосування зараз не активне або вже завершилося.", show_alert=True)
@@ -232,9 +265,12 @@ async def handle_vote(callback: types.CallbackQuery):
     if callback.data == "vote_yes":
         active_vote["votes"]["yes"].append(u_data)
         await callback.answer("✅ Ваш голос «За» зараховано!", show_alert=True)
-    else:
+    elif callback.data == "vote_no":
         active_vote["votes"]["no"].append(u_data)
         await callback.answer("✅ Ваш голос «Проти» зараховано!", show_alert=True)
+    elif callback.data == "vote_abstain":
+        active_vote["votes"]["abstain"].append(u_data)
+        await callback.answer("✅ Ваш голос зараховано (утримався).", show_alert=True)
 
 async def main():
     print("Бот запущений...")

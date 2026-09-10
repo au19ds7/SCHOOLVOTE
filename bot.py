@@ -55,6 +55,7 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data == "profile")
 async def profile_handler(callback: types.CallbackQuery):
     user = callback.from_user
+    users.add(user.id) # Додаємо про всяк випадок
     is_adm = is_admin(user.username)
     status = "Адміністратор" if is_adm else "Учасник"
     text = f"👤 **Ваш профіль:**\n\n📌 Ім'я: {user.first_name}\n🔗 Юзернейм: @{user.username or 'немає'}\n🆔 ID: {user.id}\n🛡️ Статус: {status}"
@@ -96,6 +97,7 @@ async def start_vote_prompt(callback: types.CallbackQuery):
         await callback.answer("❌ Доступ заборонено", show_alert=True)
         return
     
+    users.add(callback.from_user.id) # Гарантовано додаємо адміна у список
     admin_states[callback.from_user.id] = {"step": "topic"}
     await callback.message.answer("✍️ Напишіть **тему голосування** у наступному повідомленні:")
     await callback.answer()
@@ -103,6 +105,7 @@ async def start_vote_prompt(callback: types.CallbackQuery):
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
+    users.add(user_id) # Завжди додаємо активного користувача
     
     if user_id in admin_states:
         state = admin_states[user_id]
@@ -195,12 +198,10 @@ async def run_vote_timer(admin_id: int):
 
     active_vote["in_progress"] = False
     
-    # Підрахунок кількості голосів для загального звіту
     yes_count = len(active_vote["votes"]["yes"])
     no_count = len(active_vote["votes"]["no"])
     abstain_count = len(active_vote["votes"]["abstain"])
 
-    # Учасникам відправляємо загальну статистику без імен
     public_results = (
         f"📢 **ГОЛОСУВАННЯ ЗАВЕРШЕНО!**\n\n"
         f"📌 Тема: *{active_vote['topic']}*\n\n"
@@ -222,7 +223,6 @@ async def run_vote_timer(admin_id: int):
         except Exception:
             pass
 
-    # Адміну відправляємо детальний звіт із іменами
     yes_list = active_vote["votes"]["yes"]
     no_list = active_vote["votes"]["no"]
     abstain_list = active_vote["votes"]["abstain"]

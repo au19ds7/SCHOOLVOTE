@@ -16,11 +16,14 @@ admins_usernames = {"fyto3"}  # Головний адмін
 active_vote = {
     "in_progress": False,
     "topic": "",
+    "duration": 25,
     "votes": {"yes": [], "no": []},
-    "voted_users": set()
+    "voted_users": set(),
+    "messages_to_update": {}
 }
 
-waiting_for_topic = set()
+# Стан для адмінів, які створюють голосування
+admin_states = {}
 
 def is_admin(username: str) -> bool:
     if not username: return False
@@ -51,20 +54,36 @@ async def profile_handler(callback: types.CallbackQuery):
     await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
 
+# Підтримка команд /give admin @username та /give_admin @username
+@dp.message(Command("give"))
+async def give_command_handler(message: types.Message):
+    if not is_admin(message.from_user.username):
+        await message.answer("❌ У вас немає прав.")
+        return
+    
+    args = message.text.split()
+    # Якщо команда написана як /give admin @username
+    if len(args) >= 3 and args[1].lower() == "admin":
+        target = args[2].replace("@", "").strip().lower()
+        admins_usernames.add(target)
+        await message.answer(f"✅ Користувачу @{target} успішно видано повні права адміністратора!")
+    else:
+        await message.answer("⚠️ Використовуйте формат: `/give admin @username`", parse_mode="Markdown")
+
 @dp.message(Command("give_admin"))
-async def give_admin(message: types.Message):
+async def give_admin_legacy(message: types.Message):
     if not is_admin(message.from_user.username):
         await message.answer("❌ У вас немає прав.")
         return
     
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("⚠️ Вкажіть юзернейм. Приклад: /give_admin @username")
+        await message.answer("⚠️ Вкажіть юзернейм. Приклад: `/give admin @username`", parse_mode="Markdown")
         return
     
     target = args[1].replace("@", "").strip().lower()
     admins_usernames.add(target)
-    await message.answer(f"✅ Користувачу @{target} надано права адміністратора!")
+    await message.answer(f"✅ Користувачу @{target} успішно видано повні права адміністратора!")
 
 @dp.callback_query(F.data == "start_vote")
 async def start_vote_prompt(callback: types.CallbackQuery):
@@ -72,53 +91,107 @@ async def start_vote_prompt(callback: types.CallbackQuery):
         await callback.answer("❌ Доступ заборонено", show_alert=True)
         return
     
-    waiting_for_topic.add(callback.from_user.id)
-    await callback.message.answer("✍️ Напишіть тему голосування у наступному повідомленні:")
+    admin_states[callback.from_user.id] = {"step": "topic"}
+    await callback.message.answer("✍️ Напишіть **тему голосування** у наступному повідомленні:")
     await callback.answer()
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
-    if user_id in waiting_for_topic:
-        waiting_for_topic.remove(user_id)
+    
+    if user_id in admin_states:
+        state = admin_states[user_id]
         
-        if active_vote["in_progress"]:
-            await message.answer("⚠️ Попереднє голосування ще триває!")
+        if state["step"] == "topic":
+            state["topic"] = message.text
+            state["step"] = "duration"
+            await message.answer("⏱️ Тепер введіть **тривалість голосування в секундах** (наприклад: `25` або `60`):")
             return
+            
+        elif state["step"] == "duration":
+            text_val = message.text.strip()
+            if not text_val.isdigit():
+                await message.answer("⚠️ Будь ласка, введіть число (секунди). Спробуйте ще раз:")
+                return
+                
+            duration = int(text_val)
+            topic = state["topic"]
+            del admin_states[user_id]
+            
+            if active_vote["in_progress"]:
+                await message.answer("⚠️ Попереднє голосування ще триває!")
+                return
+            
+            active_vote["in_progress"] = True
+            active_vote["topic"] = topic
+            active_vote["duration"] = duration
+            active_vote["votes"] = {"yes": [], "no": []}
+            active_vote["voted_users"] = set()
+            active_vote["messages_to_update"] = {}
+            
+            await message.answer(f"🚀 Голосування запущено на {duration} сек! Розсилаю {len(users)} користувачам...")
+            
+            vote_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
+                 InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")]
+            ])
+            
+            for uid in users:
+                try:
+                    msg = await bot.send_message(
+                        uid, 
+                        f"📢 **НОВЕ ГОЛОСУВАННЯ!**\n\n{topic}\n\n⏱️ Залишилося часу: **{duration} сек.**", 
+                        reply_markup=vote_kb, 
+                        parse_mode="Markdown"
+                    )
+                    active_vote["messages_to_update"][uid] = msg.message_id
+                except Exception:
+                    pass
+            
+            asyncio.create_task(run_vote_timer(user_id))
+    else:
+        pass
+
+async def run_vote_timer(admin_id: int):
+    seconds_left = active_vote["duration"]
+    vote_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
+         InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")]
+    ])
+    
+    while seconds_left > 0 and active_vote["in_progress"]:
+        await asyncio.sleep(1)
+        seconds_left -= 1
         
-        topic = message.text
-        active_vote["in_progress"] = True
-        active_vote["topic"] = topic
-        active_vote["votes"] = {"yes": [], "no": []}
-        active_vote["voted_users"] = set()
-        
-        await message.answer(f"🚀 Голосування розпочато! Розсилаю {len(users)} користувачам...")
-        
-        vote_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👍 За", callback_data="vote_yes"), 
-             InlineKeyboardButton(text="👎 Проти", callback_data="vote_no")]
-        ])
-        
-        for uid in users:
+        if seconds_left <= 0:
+            break
+            
+        for uid, msg_id in list(active_vote["messages_to_update"].items()):
             try:
-                await bot.send_message(
-                    uid, 
-                    f"📢 **НОВЕ ГОЛОСУВАННЯ!**\n\n{topic}\n\n⏱️ У вас є **25 секунд**!", 
-                    reply_markup=vote_kb, 
+                await bot.edit_message_text(
+                    chat_id=uid,
+                    message_id=msg_id,
+                    text=f"📢 **НОВЕ ГОЛОСУВАННЯ!**\n\n{active_vote['topic']}\n\n⏱️ Залишилося часу: **{seconds_left} сек.**",
+                    reply_markup=vote_kb,
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
-        
-        # Запуск таймера на 25 секунд
-        asyncio.create_task(vote_timer(user_id))
-    else:
-        pass 
 
-async def vote_timer(admin_id: int):
-    await asyncio.sleep(25)
     active_vote["in_progress"] = False
     
+    for uid, msg_id in list(active_vote["messages_to_update"].items()):
+        try:
+            await bot.edit_message_text(
+                chat_id=uid,
+                message_id=msg_id,
+                text=f"📢 **ГОЛОСУВАННЯ ЗАВЕРШЕНО!**\n\n{active_vote['topic']}",
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
     yes_list = active_vote["votes"]["yes"]
     no_list = active_vote["votes"]["no"]
     
@@ -141,7 +214,7 @@ async def vote_timer(admin_id: int):
 @dp.callback_query(F.data.in_({"vote_yes", "vote_no"}))
 async def handle_vote(callback: types.CallbackQuery):
     if not active_vote["in_progress"]:
-        await callback.answer("❌ Голосування зараз не активне.", show_alert=True)
+        await callback.answer("❌ Голосування зараз не активне або вже завершилося.", show_alert=True)
         return
     
     user_id = callback.from_user.id
